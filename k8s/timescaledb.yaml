@@ -1,0 +1,228 @@
+# F1 GPU Telemetry System - TimescaleDB Deployment
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: timescaledb
+  namespace: f1-system
+  labels:
+    app: f1-gpu-telemetry
+    component: database
+spec:
+  serviceName: timescaledb
+  replicas: 1
+  selector:
+    matchLabels:
+      app: timescaledb
+      component: database
+  template:
+    metadata:
+      labels:
+        app: timescaledb
+        component: database
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9187"
+    spec:
+      containers:
+        - name: timescaledb
+          image: timescale/timescaledb:latest-pg15
+          ports:
+            - containerPort: 5432
+              name: postgres
+          env:
+            - name: POSTGRES_DB
+              valueFrom:
+                configMapKeyRef:
+                  name: f1-config
+                  key: postgres-db
+            - name: POSTGRES_USER
+              valueFrom:
+                configMapKeyRef:
+                  name: f1-config
+                  key: postgres-user
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: f1-secrets
+                  key: postgres-password
+            - name: POSTGRES_INITDB_ARGS
+              value: "--encoding=UTF-8"
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          volumeMounts:
+            - name: postgres-data
+              mountPath: /var/lib/postgresql/data
+            - name: init-scripts
+              mountPath: /docker-entrypoint-initdb.d
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: 2
+              memory: 4Gi
+          livenessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - exec pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB" -h 127.0.0.1 -p 5432
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 6
+          readinessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - exec pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB" -h 127.0.0.1 -p 5432
+            initialDelaySeconds: 5
+            periodSeconds: 2
+            timeoutSeconds: 1
+            successThreshold: 1
+            failureThreshold: 3
+      volumes:
+        - name: init-scripts
+          configMap:
+            name: timescaledb-init
+            defaultMode: 0755
+  volumeClaimTemplates:
+    - metadata:
+        name: postgres-data
+        labels:
+          app: timescaledb
+          component: database
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: f1-fast-ssd
+        resources:
+          requests:
+            storage: 50Gi
+
+---
+# TimescaleDB Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: timescaledb
+  namespace: f1-system
+  labels:
+    app: f1-gpu-telemetry
+    component: database
+spec:
+  selector:
+    app: timescaledb
+    component: database
+  ports:
+    - port: 5432
+      targetPort: 5432
+      name: postgres
+  clusterIP: None  # Headless service for StatefulSet
+
+---
+# TimescaleDB Initialization Scripts ConfigMap
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: timescaledb-init
+  namespace: f1-system
+  labels:
+    app: f1-gpu-telemetry
+    component: database
+data:
+  01-init-timescaledb.sql: |
+    -- Create TimescaleDB extension
+    CREATE EXTENSION IF NOT EXISTS timescaledb;
+    
+    -- Create F1 telemetry table
+    CREATE TABLE IF NOT EXISTS telemetry (
+        time TIMESTAMPTZ NOT NULL,
+        driver_id INTEGER NOT NULL,
+        session_key VARCHAR(50),
+        speed REAL,
+        throttle REAL,
+        brake REAL,
+        gear INTEGER,
+        drs BOOLEAN,
+        tire_temp_fl REAL,
+        tire_temp_fr REAL,
+        tire_temp_rl REAL,
+        tire_temp_rr REAL,
+        fuel_load REAL,
+        lap_number INTEGER,
+        sector INTEGER,
+        x_position REAL,
+        y_position REAL,
+        z_position REAL
+    );
+    
+    -- Convert to hypertable
+    SELECT create_hypertable('telemetry', 'time', if_not_exists => TRUE);
+    
+    -- Create indexes
+    CREATE INDEX IF NOT EXISTS idx_telemetry_driver_time ON telemetry (driver_id, time DESC);
+    CREATE INDEX IF NOT EXISTS idx_telemetry_session ON telemetry (session_key, time DESC);
+    
+    -- Create lap times table
+    CREATE TABLE IF NOT EXISTS lap_times (
+        time TIMESTAMPTZ NOT NULL,
+        driver_id INTEGER NOT NULL,
+        session_key VARCHAR(50),
+        lap_number INTEGER,
+        lap_time REAL,
+        sector_1_time REAL,
+        sector_2_time REAL,
+        sector_3_time REAL,
+        is_personal_best BOOLEAN,
+        is_overall_fastest BOOLEAN,
+        compound VARCHAR(10),
+        tyre_life INTEGER
+    );
+    
+    -- Convert to hypertable
+    SELECT create_hypertable('lap_times', 'time', if_not_exists => TRUE);
+    
+    -- Create predictions table
+    CREATE TABLE IF NOT EXISTS predictions (
+        time TIMESTAMPTZ NOT NULL,
+        session_key VARCHAR(50),
+        prediction_type VARCHAR(50),
+        driver_id INTEGER,
+        predicted_value REAL,
+        confidence REAL,
+        model_version VARCHAR(20)
+    );
+    
+    -- Convert to hypertable
+    SELECT create_hypertable('predictions', 'time', if_not_exists => TRUE);
+    
+    -- Create data retention policies (keep 1 year of detailed data)
+    SELECT add_retention_policy('telemetry', INTERVAL '1 year', if_not_exists => TRUE);
+    SELECT add_retention_policy('lap_times', INTERVAL '2 years', if_not_exists => TRUE);
+    SELECT add_retention_policy('predictions', INTERVAL '6 months', if_not_exists => TRUE);
+    
+    -- Create continuous aggregates for performance
+    CREATE MATERIALIZED VIEW IF NOT EXISTS telemetry_1min
+    WITH (timescaledb.continuous) AS
+    SELECT time_bucket('1 minute', time) AS bucket,
+           driver_id,
+           session_key,
+           AVG(speed) AS avg_speed,
+           MAX(speed) AS max_speed,
+           AVG(throttle) AS avg_throttle,
+           AVG(brake) AS avg_brake,
+           AVG((tire_temp_fl + tire_temp_fr + tire_temp_rl + tire_temp_rr) / 4) AS avg_tire_temp
+    FROM telemetry
+    GROUP BY bucket, driver_id, session_key;
+    
+    -- Add refresh policy
+    SELECT add_continuous_aggregate_policy('telemetry_1min',
+        start_offset => INTERVAL '1 hour',
+        end_offset => INTERVAL '1 minute',
+        schedule_interval => INTERVAL '1 minute',
+        if_not_exists => TRUE);
+    
+    GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO f1user;

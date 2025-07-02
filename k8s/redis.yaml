@@ -1,0 +1,222 @@
+# F1 GPU Telemetry System - Redis Deployment
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: f1-system
+  labels:
+    app: f1-gpu-telemetry
+    component: cache
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+      component: cache
+  template:
+    metadata:
+      labels:
+        app: redis
+        component: cache
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9121"
+    spec:
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          ports:
+            - containerPort: 6379
+              name: redis
+          command:
+            - redis-server
+            - /etc/redis/redis.conf
+          env:
+            - name: REDIS_REPLICATION_MODE
+              value: master
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 1Gi
+          volumeMounts:
+            - name: redis-data
+              mountPath: /data
+            - name: redis-config
+              mountPath: /etc/redis
+          livenessProbe:
+            exec:
+              command:
+                - redis-cli
+                - ping
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            exec:
+              command:
+                - redis-cli
+                - ping
+            initialDelaySeconds: 5
+            periodSeconds: 2
+        - name: redis-exporter
+          image: oliver006/redis_exporter:latest
+          ports:
+            - containerPort: 9121
+              name: metrics
+          env:
+            - name: REDIS_ADDR
+              value: "redis://localhost:6379"
+          resources:
+            requests:
+              cpu: 50m
+              memory: 50Mi
+            limits:
+              cpu: 100m
+              memory: 100Mi
+      volumes:
+        - name: redis-data
+          persistentVolumeClaim:
+            claimName: redis-pvc
+        - name: redis-config
+          configMap:
+            name: redis-config
+
+---
+# Redis Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: f1-system
+  labels:
+    app: f1-gpu-telemetry
+    component: cache
+spec:
+  selector:
+    app: redis
+    component: cache
+  ports:
+    - port: 6379
+      targetPort: 6379
+      name: redis
+    - port: 9121
+      targetPort: 9121
+      name: metrics
+
+---
+# Redis Configuration ConfigMap
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: redis-config
+  namespace: f1-system
+  labels:
+    app: f1-gpu-telemetry
+    component: cache
+data:
+  redis.conf: |
+    # Redis configuration for F1 GPU Telemetry System
+    
+    # Network
+    bind 0.0.0.0
+    port 6379
+    tcp-backlog 511
+    timeout 0
+    tcp-keepalive 300
+    
+    # General
+    daemonize no
+    supervised no
+    pidfile /var/run/redis_6379.pid
+    loglevel notice
+    logfile ""
+    databases 16
+    
+    # Snapshotting
+    save 900 1
+    save 300 10
+    save 60 10000
+    stop-writes-on-bgsave-error yes
+    rdbcompression yes
+    rdbchecksum yes
+    dbfilename dump.rdb
+    dir /data
+    
+    # Replication
+    replica-serve-stale-data yes
+    replica-read-only yes
+    repl-diskless-sync no
+    repl-diskless-sync-delay 5
+    repl-ping-replica-period 10
+    repl-timeout 60
+    repl-disable-tcp-nodelay no
+    repl-backlog-size 1mb
+    repl-backlog-ttl 3600
+    
+    # Security
+    # requirepass foobared
+    
+    # Clients
+    maxclients 10000
+    
+    # Memory management
+    maxmemory 768mb
+    maxmemory-policy allkeys-lru
+    maxmemory-samples 5
+    
+    # Lazy freeing
+    lazyfree-lazy-eviction no
+    lazyfree-lazy-expire no
+    lazyfree-lazy-server-del no
+    replica-lazy-flush no
+    
+    # Append only file
+    appendonly yes
+    appendfilename "appendonly.aof"
+    appendfsync everysec
+    no-appendfsync-on-rewrite no
+    auto-aof-rewrite-percentage 100
+    auto-aof-rewrite-min-size 64mb
+    aof-load-truncated yes
+    aof-use-rdb-preamble yes
+    
+    # Lua scripting
+    lua-time-limit 5000
+    
+    # Redis cluster
+    # cluster-enabled yes
+    # cluster-config-file nodes-6379.conf
+    # cluster-node-timeout 15000
+    
+    # Slow log
+    slowlog-log-slower-than 10000
+    slowlog-max-len 128
+    
+    # Latency monitor
+    latency-monitor-threshold 0
+    
+    # Event notification
+    notify-keyspace-events ""
+    
+    # Advanced config
+    hash-max-ziplist-entries 512
+    hash-max-ziplist-value 64
+    list-max-ziplist-size -2
+    list-compress-depth 0
+    set-max-intset-entries 512
+    zset-max-ziplist-entries 128
+    zset-max-ziplist-value 64
+    hll-sparse-max-bytes 3000
+    stream-node-max-bytes 4096
+    stream-node-max-entries 100
+    activerehashing yes
+    client-output-buffer-limit normal 0 0 0
+    client-output-buffer-limit replica 256mb 64mb 60
+    client-output-buffer-limit pubsub 32mb 8mb 60
+    hz 10
+    dynamic-hz yes
+    aof-rewrite-incremental-fsync yes
+    rdb-save-incremental-fsync yes

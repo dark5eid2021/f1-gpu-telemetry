@@ -1,0 +1,12 @@
+# F1 GPU Telemetry System - Kubernetes Namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: f1-system
+  labels:
+    name: f1-system
+    app: f1-gpu-telemetry
+    version: v1.0.0
+  annotations:
+    description: "F1 GPU Telemetry System namespace for all components"
+    contact: "f1-gpu-telemetry-team"

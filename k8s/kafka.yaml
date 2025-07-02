@@ -1,0 +1,307 @@
+# F1 GPU Telemetry System - Kafka Deployment
+---
+# Zookeeper StatefulSet
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: zookeeper
+  namespace: f1-system
+  labels:
+    app: f1-gpu-telemetry
+    component: zookeeper
+spec:
+  serviceName: zookeeper
+  replicas: 1
+  selector:
+    matchLabels:
+      app: zookeeper
+      component: zookeeper
+  template:
+    metadata:
+      labels:
+        app: zookeeper
+        component: zookeeper
+    spec:
+      containers:
+        - name: zookeeper
+          image: confluentinc/cp-zookeeper:latest
+          ports:
+            - containerPort: 2181
+              name: client
+            - containerPort: 2888
+              name: server
+            - containerPort: 3888
+              name: leader-election
+          env:
+            - name: ZOOKEEPER_CLIENT_PORT
+              value: "2181"
+            - name: ZOOKEEPER_TICK_TIME
+              value: "2000"
+            - name: ZOOKEEPER_SYNC_LIMIT
+              value: "5"
+            - name: ZOOKEEPER_INIT_LIMIT
+              value: "10"
+            - name: ZOOKEEPER_MAX_CLIENT_CNXNS
+              value: "60"
+            - name: ZOOKEEPER_AUTOPURGE_SNAP_RETAIN_COUNT
+              value: "3"
+            - name: ZOOKEEPER_AUTOPURGE_PURGE_INTERVAL
+              value: "24"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+            - name: zookeeper-data
+              mountPath: /var/lib/zookeeper/data
+            - name: zookeeper-logs
+              mountPath: /var/lib/zookeeper/log
+          livenessProbe:
+            exec:
+              command: ['/bin/bash', '-c', 'echo "ruok" | nc localhost 2181']
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            exec:
+              command: ['/bin/bash', '-c', 'echo "ruok" | nc localhost 2181']
+            initialDelaySeconds: 5
+            periodSeconds: 10
+  volumeClaimTemplates:
+    - metadata:
+        name: zookeeper-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: f1-fast-ssd
+        resources:
+          requests:
+            storage: 10Gi
+    - metadata:
+        name: zookeeper-logs
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: f1-fast-ssd
+        resources:
+          requests:
+            storage: 10Gi
+
+---
+# Zookeeper Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: zookeeper
+  namespace: f1-system
+  labels:
+    app: f1-gpu-telemetry
+    component: zookeeper
+spec:
+  selector:
+    app: zookeeper
+    component: zookeeper
+  ports:
+    - port: 2181
+      targetPort: 2181
+      name: client
+    - port: 2888
+      targetPort: 2888
+      name: server
+    - port: 3888
+      targetPort: 3888
+      name: leader-election
+  clusterIP: None
+
+---
+# Kafka StatefulSet
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: kafka
+  namespace: f1-system
+  labels:
+    app: f1-gpu-telemetry
+    component: kafka
+spec:
+  serviceName: kafka
+  replicas: 3
+  selector:
+    matchLabels:
+      app: kafka
+      component: kafka
+  template:
+    metadata:
+      labels:
+        app: kafka
+        component: kafka
+    spec:
+      containers:
+        - name: kafka
+          image: confluentinc/cp-kafka:latest
+          ports:
+            - containerPort: 9092
+              name: plaintext
+            - containerPort: 9999
+              name: jmx
+          env:
+            - name: KAFKA_BROKER_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: KAFKA_ZOOKEEPER_CONNECT
+              value: "zookeeper:2181"
+            - name: KAFKA_LISTENER_SECURITY_PROTOCOL_MAP
+              value: "PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT"
+            - name: KAFKA_ADVERTISED_LISTENERS
+              value: "PLAINTEXT://$(hostname).kafka:9092"
+            - name: KAFKA_LISTENERS
+              value: "PLAINTEXT://0.0.0.0:9092"
+            - name: KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR
+              value: "3"
+            - name: KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR
+              value: "3"
+            - name: KAFKA_TRANSACTION_STATE_LOG_MIN_ISR
+              value: "2"
+            - name: KAFKA_DEFAULT_REPLICATION_FACTOR
+              value: "3"
+            - name: KAFKA_MIN_INSYNC_REPLICAS
+              value: "2"
+            - name: KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS
+              value: "0"
+            - name: KAFKA_HEAP_OPTS
+              value: "-Xmx1G -Xms1G"
+            - name: KAFKA_JMX_PORT
+              value: "9999"
+            - name: KAFKA_JMX_OPTS
+              value: "-Dcom.sun.management.jmxremote -Dcom.sun.management.jmxremote.authenticate=false -Dcom.sun.management.jmxremote.ssl=false -Djava.rmi.server.hostname=$(hostname) -Dcom.sun.management.jmxremote.rmi.port=9999"
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: 1
+              memory: 2Gi
+          volumeMounts:
+            - name: kafka-data
+              mountPath: /var/lib/kafka/data
+          livenessProbe:
+            exec:
+              command:
+                - sh
+                - -ec
+                - /usr/bin/kafka-broker-api-versions --bootstrap-server localhost:9092
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -ec
+                - /usr/bin/kafka-broker-api-versions --bootstrap-server localhost:9092
+            initialDelaySeconds: 20
+            periodSeconds: 10
+  volumeClaimTemplates:
+    - metadata:
+        name: kafka-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: f1-fast-ssd
+        resources:
+          requests:
+            storage: 50Gi
+
+---
+# Kafka Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka
+  namespace: f1-system
+  labels:
+    app: f1-gpu-telemetry
+    component: kafka
+spec:
+  selector:
+    app: kafka
+    component: kafka
+  ports:
+    - port: 9092
+      targetPort: 9092
+      name: plaintext
+    - port: 9999
+      targetPort: 9999
+      name: jmx
+  clusterIP: None
+
+---
+# Kafka Topics Creation Job
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: kafka-topics-creation
+  namespace: f1-system
+  labels:
+    app: f1-gpu-telemetry
+    component: kafka-setup
+spec:
+  template:
+    metadata:
+      labels:
+        app: kafka-topics-creation
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: kafka-topics
+          image: confluentinc/cp-kafka:latest
+          command:
+            - /bin/bash
+            - -c
+            - |
+              # Wait for Kafka to be ready
+              echo "Waiting for Kafka to be ready..."
+              while ! /usr/bin/kafka-broker-api-versions --bootstrap-server kafka:9092; do
+                sleep 5
+              done
+              
+              echo "Creating F1 Telemetry topics..."
+              
+              # Create telemetry topic
+              /usr/bin/kafka-topics --bootstrap-server kafka:9092 \
+                --create --if-not-exists \
+                --topic f1-telemetry \
+                --partitions 10 \
+                --replication-factor 3 \
+                --config retention.ms=86400000 \
+                --config segment.ms=3600000 \
+                --config compression.type=lz4
+              
+              # Create predictions topic
+              /usr/bin/kafka-topics --bootstrap-server kafka:9092 \
+                --create --if-not-exists \
+                --topic f1-predictions \
+                --partitions 5 \
+                --replication-factor 3 \
+                --config retention.ms=3600000 \
+                --config compression.type=lz4
+              
+              # Create positions topic
+              /usr/bin/kafka-topics --bootstrap-server kafka:9092 \
+                --create --if-not-exists \
+                --topic f1-positions \
+                --partitions 10 \
+                --replication-factor 3 \
+                --config retention.ms=86400000 \
+                --config compression.type=lz4
+              
+              # Create lap times topic
+              /usr/bin/kafka-topics --bootstrap-server kafka:9092 \
+                --create --if-not-exists \
+                --topic f1-lap-times \
+                --partitions 5 \
+                --replication-factor 3 \
+                --config retention.ms=604800000 \
+                --config compression.type=lz4
+              
+              echo "Topics created successfully!"
+              /usr/bin/kafka-topics --bootstrap-server kafka:9092 --list

@@ -1,0 +1,176 @@
+# F1 GPU Telemetry System - Storage Configuration
+---
+# Storage Class for fast SSD storage
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: f1-fast-ssd
+  labels:
+    app: f1-gpu-telemetry
+provisioner: kubernetes.io/gce-pd  # Change based on your cloud provider
+parameters:
+  type: pd-ssd
+  replication-type: none
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+
+---
+# Persistent Volume for F1 data storage
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: f1-data-pv
+  labels:
+    app: f1-gpu-telemetry
+    component: storage
+spec:
+  capacity:
+    storage: 100Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: f1-fast-ssd
+  # Use appropriate volume source for your environment
+  # For local development:
+  hostPath:
+    path: /mnt/f1-data
+    type: DirectoryOrCreate
+  # For cloud providers, use:
+  # gcePersistentDisk:
+  #   pdName: f1-data-disk
+  #   fsType: ext4
+  # awsElasticBlockStore:
+  #   volumeID: vol-xxxxxxxxx
+  #   fsType: ext4
+
+---
+# Persistent Volume Claim for F1 data
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: f1-data-pvc
+  namespace: f1-system
+  labels:
+    app: f1-gpu-telemetry
+    component: storage
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 100Gi
+  storageClassName: f1-fast-ssd
+
+---
+# Persistent Volume for TimescaleDB
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: timescaledb-pv
+  labels:
+    app: f1-gpu-telemetry
+    component: database
+spec:
+  capacity:
+    storage: 50Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: f1-fast-ssd
+  hostPath:
+    path: /mnt/timescaledb-data
+    type: DirectoryOrCreate
+
+---
+# Persistent Volume Claim for TimescaleDB
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: timescaledb-pvc
+  namespace: f1-system
+  labels:
+    app: f1-gpu-telemetry
+    component: database
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 50Gi
+  storageClassName: f1-fast-ssd
+
+---
+# Persistent Volume for Redis cache
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: redis-pv
+  labels:
+    app: f1-gpu-telemetry
+    component: cache
+spec:
+  capacity:
+    storage: 10Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Delete
+  storageClassName: f1-fast-ssd
+  hostPath:
+    path: /mnt/redis-data
+    type: DirectoryOrCreate
+
+---
+# Persistent Volume Claim for Redis
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: redis-pvc
+  namespace: f1-system
+  labels:
+    app: f1-gpu-telemetry
+    component: cache
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+  storageClassName: f1-fast-ssd
+
+---
+# Persistent Volume for backup storage
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: backup-pv
+  labels:
+    app: f1-gpu-telemetry
+    component: backup
+spec:
+  capacity:
+    storage: 50Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: f1-fast-ssd
+  hostPath:
+    path: /mnt/f1-backup
+    type: DirectoryOrCreate
+
+---
+# Persistent Volume Claim for backups
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: backup-pvc
+  namespace: f1-system
+  labels:
+    app: f1-gpu-telemetry
+    component: backup
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 50Gi
+  storageClassName: f1-fast-ssd
